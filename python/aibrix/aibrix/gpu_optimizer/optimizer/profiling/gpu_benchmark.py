@@ -25,7 +25,6 @@ import json
 import random
 import sys
 import time
-from datetime import datetime, timezone
 from typing import AsyncGenerator, List, Literal, Optional, Tuple
 
 import aiohttp
@@ -59,43 +58,35 @@ def sample_requests(
         try:
             with open(workload_dataset_file) as f:
                 data = json.load(f)
-                # Return timestamp and request tuples
+                if not data or not data[0].get("Requests"):
+                    print_err("Warning: No requests found in dataset")
+                    return []
+                request = data[0]["Requests"][0]
+                
+                # Generate repeated requests based on num_requests
                 requests = []
-                for i, entry in enumerate(data):
-                    # Limit the number of requests read from workload
-
-                    # print(f"Request {i}: {entry}")
-                    cur_timestamp = entry["Timestamp"]
-                    next_timestamp = (
-                        data[i + 1]["Timestamp"] if i < len(data) - 1 else cur_timestamp
-                    )
-                    interval = (next_timestamp - cur_timestamp) / 1000.0
-                    for i, req in enumerate(entry["Requests"]):
-                        requests.append(
-                            (
-                                req["Prompt"],
-                                req["Prompt Length"],
-                                req["Output Length"],
-                                interval if i == len(entry["Requests"]) - 1 else 0,
-                            )
-                        )
-                        if num_requests > 0 and len(requests) >= num_requests:
-                            return requests
-                # print('total requests: ', len(requests))
-                # print('the least requests: ', requests[len(requests) - 1])
+                for _ in range(num_requests):
+                    requests.append((
+                        request["Prompt"],
+                        request["Prompt Length"],
+                        request["Output Length"],
+                        -1  # Default interval
+                    ))
+                
                 return requests
+                
         except Exception as e:
             print_err(
                 f"Warning: Failed to load prompt dataset ({e}), falling back to synthetic prompts"
             )
 
-    # Original synthetic prompt generation
-    requests = []
-    for _ in range(num_requests):
-        synthetic_prompt = "hi " * config_input_len
-        # assign timestamp to -1 for all requests
-        requests.append((synthetic_prompt, config_input_len, config_output_len, -1))
-    return requests
+    # # Original synthetic prompt generation
+    # requests = []
+    # for _ in range(num_requests):
+    #     synthetic_prompt = "hi " * config_input_len
+    #     # assign timestamp to -1 for all requests
+    #     requests.append((synthetic_prompt, config_input_len, config_output_len, -1))
+    # return requests
 
 
 async def get_request(
@@ -162,14 +153,13 @@ async def send_request(
     use_beam_search: bool,
     stream: bool,
     verbose: bool,
-    trace: bool,
 ) -> None:
     headers = {
         "User-Agent": "Benchmark Client",
     }
     if api_key is not None or api_key != "":
         headers["Authorization"] = f"Bearer {api_key}"
-    streaming = stream
+    streaming = True
     if backend == "vllm":
         pload = {
             "model": model,
@@ -191,7 +181,6 @@ async def send_request(
         raise ValueError(f"Unknown backend: {backend}")
 
     request_start_time = time.perf_counter()
-    ts = datetime.now(timezone.utc)
     timeout = aiohttp.ClientTimeout(total=3 * 3600)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         while True:
@@ -242,26 +231,10 @@ async def send_request(
 
     request_end_time = time.perf_counter()
     request_latency = request_end_time - request_start_time
-
-    if trace:
-        request_trace = {
-            "input_tokens": prompt_len,
-            "output_tokens": output_len
-            if len(token_latencies) == 0
-            else len(token_latencies) + 1,
-            "timestamp": ts.strftime("%Y-%m-%d %H:%M:%S %Z%z"),
-            "E2E": request_latency,
-        }
-        if len(token_latencies) > 0:
-            request_trace["TTFT"] = time_to_first
-            request_trace["TPOT_mean"] = np.mean(token_latencies)  # type: ignore
-            request_trace["TPOT_P50"] = np.percentile(token_latencies, 50)  # type: ignore
-            request_trace["TPOT_P90"] = np.percentile(token_latencies, 90)  # type: ignore
-            request_trace["TPOT_P99"] = np.percentile(token_latencies, 99)  # type: ignore
-        print(json.dumps(request_trace))
+    if len(token_latencies) == 0:
+        token_latencies = [0]
     REQUEST_LATENCY.append((prompt_len, output_len, request_latency))
-    if len(token_latencies) > 0:
-        TOKEN_LATENCY.append((prompt_len, output_len, token_latencies))
+    TOKEN_LATENCY.append((prompt_len, output_len, token_latencies))
     TIME_TO_FIRST_TOKEN.append(time_to_first)
 
 
@@ -277,7 +250,6 @@ async def benchmark(
     num_requests: int,
     stream: bool,
     verbose: bool,
-    trace: bool,
     use_workload_interval: bool = False,
 ) -> None:
     tasks: List[asyncio.Task] = []
@@ -301,7 +273,6 @@ async def benchmark(
                 use_beam_search,
                 stream,
                 verbose,
-                trace,
             )
         )
         tasks.append(task)
@@ -328,7 +299,11 @@ def main(args: argparse.Namespace):
     input_requests = sample_requests(
         args.num_prompts, args.input_len, args.output_len, args.workload_dataset_file
     )
-    result["samples"] = len(input_requests)  # Update number of samples
+
+    # Validate we have requests to process
+    if not input_requests:
+        print_err(f"Warning: No valid requests for configuration - input_len: {args.input_len}, output_len: {args.output_len}. Skipping...")
+        return 
 
     benchmark_start_time = time.perf_counter()
     try:
@@ -345,7 +320,6 @@ def main(args: argparse.Namespace):
                 len(input_requests),
                 args.stream,
                 args.verbose,
-                args.trace,
                 args.use_workload_interval,
             )
         )
@@ -369,7 +343,7 @@ def main(args: argparse.Namespace):
             f"Output Token Throughput: {sum([output for _, output, _ in REQUEST_LATENCY]) / benchmark_time:.2f} tokens/s"
         )
         print()
-    elif not args.trace:
+    else:
         result["metric"] = "TPUT"  # Throughput
         result["mean"] = len(REQUEST_LATENCY) / benchmark_time
         print(json.dumps(result))
@@ -394,7 +368,7 @@ def main(args: argparse.Namespace):
             f"99p: {np.percentile([latency for _, _, latency in REQUEST_LATENCY], 99)} s"
         )
         print()
-    elif not args.trace:
+    else:
         result["metric"] = "E2E"  # Request latency
         result["mean"] = avg_latency
         result["P50"] = np.percentile(
@@ -408,16 +382,13 @@ def main(args: argparse.Namespace):
         )
         print(json.dumps(result))
 
-    if len(TOKEN_LATENCY) == 0:
-        all_token_latencies = np.array([0.0])
-    else:
-        all_token_latencies = np.array(
-            [
-                latency
-                for _, _, token_latencies in TOKEN_LATENCY
-                for latency in token_latencies
-            ]
-        )
+    all_token_latencies = np.array(
+        [
+            latency
+            for _, _, token_latencies in TOKEN_LATENCY
+            for latency in token_latencies
+        ]
+    )
     if args.verbose:
         print("TOKEN LATENCIES")
         print("TTFT")
@@ -431,7 +402,7 @@ def main(args: argparse.Namespace):
         print(f"90p: {np.percentile(all_token_latencies, 90)}")
         print(f"99p: {np.percentile(all_token_latencies, 99)}")
         print()
-    elif not args.trace:
+    else:
         result["metric"] = "TTFT"  # Time to first token
         result["mean"] = np.mean(TIME_TO_FIRST_TOKEN)
         result["P50"] = np.percentile(TIME_TO_FIRST_TOKEN, 50)
@@ -462,7 +433,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--use-beam-search", action="store_true")
     parser.add_argument(
-        "--num-prompts", type=int, default=0, help="Number of prompts to process."
+        "--num-prompts", type=int, default=1000, help="Number of prompts to process."
     )
     parser.add_argument(
         "--request-rate",
@@ -482,15 +453,8 @@ if __name__ == "__main__":
     parser.add_argument("--input-len", type=int, default=0)
     parser.add_argument("--output-len", type=int, default=0)
     parser.add_argument("--api-key", type=str, default=None)
-    parser.add_argument(
-        "--verbose", action="store_true", help="Print human readable info to stdout"
-    )
-    parser.add_argument(
-        "--trace",
-        action="store_true",
-        help="Print request trace to stdout instead of statistics",
-    )
-    parser.add_argument("--stream", action="store_true", help="Enable stream request.")
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--stream", action="store_true")
     parser.add_argument(
         "--workload_dataset_file",
         type=str,
