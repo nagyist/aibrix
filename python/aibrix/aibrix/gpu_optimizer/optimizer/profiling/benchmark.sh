@@ -19,7 +19,7 @@ PATH_PREFIX=`dirname "$0"`
 FILE_NAME="result"
 MODEL="llama2-7b"
 
-TOTAL= 1 #100
+TOTAL=2 #100
 # TODO: Set your preferred request sizes and rates here.
 input_start=4
 input_limit=$((2**11)) # 2K
@@ -46,7 +46,9 @@ generate_workload() {
         --input-tokens "$input_len" \
         --min-output-tokens "$output_len" \
         --tolerance "0.2" \
-        --qps "2.0"
+        --qps "2.0" \
+        --host "localhost" \
+        --port "8010"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -129,6 +131,9 @@ mkdir -p "$PROMPT_DIR"
 # Clear the workload directory
 echo "Clearing workload directory: $PROMPT_DIR"
 rm -rf "$PROMPT_DIR"/*
+
+# Clear the output file
+> "$OUTPUT_FILE"
 
 # Print the arguments (or use them in your script logic)
 echo "Start benchmark $MODEL, input tokens:[$input_start:$input_limit], output tokens:[$output_start:$output_limit], rates:[$rate_start:$rate_limit], save as: $OUTPUT_FILE", workload: "$workload":
