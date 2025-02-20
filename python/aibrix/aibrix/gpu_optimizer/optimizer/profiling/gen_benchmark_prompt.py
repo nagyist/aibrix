@@ -1,19 +1,24 @@
 import json
 import time
 import requests
-from typing import Tuple, List, Optional, Dict, Union
+from typing import Tuple, List, Optional, Dict, Union, Any
 from datetime import datetime
 import threading
 import argparse
-from transformers import AutoTokenizer, PreTrainedTokenizer, PreTrainedTokenizerFast
+import tiktoken
+import os
 
 def get_tokenizer(
         pretrained_model_name_or_path: str, trust_remote_code: bool
-) -> Union[PreTrainedTokenizer, PreTrainedTokenizerFast]:
-    return AutoTokenizer.from_pretrained(
-        pretrained_model_name_or_path,
-        trust_remote_code=trust_remote_code
-    )
+) -> Any:  # Changed return type to Any since we're returning a different tokenizer type
+    """Get tiktoken tokenizer."""
+    try:
+        # Use cl100k_base for ChatGPT-style models
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception as e:
+        print(f"Error loading cl100k_base tokenizer: {e}")
+        # Fallback to p50k_base (GPT-3 style)
+        return tiktoken.get_encoding("p50k_base")
 
 class RateLimiter:
     def __init__(self, qps: float):
@@ -35,14 +40,10 @@ class PromptSelector:
     def __init__(self, trace_file: str, 
                  model_endpoint: str = "http://localhost:8888/v1/chat/completions",
                  qps: float = 2.0,
-                 temperature: float = 0.0,
-                 model_name: str = "Qwen/Qwen2.5-Coder-7B-Instruct"):
+                 temperature: float = 0.0):
         self.trace_file = trace_file
         self.model_endpoint = model_endpoint
-        self.tokenizer = get_tokenizer(
-            pretrained_model_name_or_path=model_name, 
-            trust_remote_code=True
-        )
+        self.tokenizer = get_tokenizer("", False)  # Empty string and False since parameters aren't used
         self.rate_limiter = RateLimiter(qps)
         self.temperature = temperature
         
@@ -150,8 +151,15 @@ class PromptSelector:
         if not matching_prompts:
             print("\nNo matching prompts found, skipping file creation.")
             return
-            
-        filename = f"result/prompts/prompt_in{target_input_tokens}_out{min_output_tokens}.json"
+
+        # Get the directory where the script is located
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Create the prompts directory relative to the script location
+        prompts_dir = os.path.join(script_dir, "result", "prompts")
+        os.makedirs(prompts_dir, exist_ok=True) 
+
+        filename = os.path.join(prompts_dir, f"prompt_in{target_input_tokens}_out{min_output_tokens}.json")
         
         # Create the benchmark-compatible format
         current_time = int(time.time() * 1000)  # Current timestamp in milliseconds

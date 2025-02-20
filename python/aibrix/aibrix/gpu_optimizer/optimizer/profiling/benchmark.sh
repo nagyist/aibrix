@@ -19,7 +19,7 @@ PATH_PREFIX=`dirname "$0"`
 FILE_NAME="result"
 MODEL="llama2-7b"
 
-TOTAL=2 #100
+TOTAL=100 #100
 # TODO: Set your preferred request sizes and rates here.
 input_start=4
 input_limit=$((2**11)) # 2K
