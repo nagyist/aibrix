@@ -40,13 +40,16 @@ class PromptSelector:
     def __init__(self, trace_file: str, 
                  model_endpoint: str = "http://localhost:8888/v1/chat/completions",
                  qps: float = 2.0,
-                 temperature: float = 0.0):
+                 temperature: float = 0.0,
+                 api_key: str = "any_key",
+                 total_prompts: int = 1):
         self.trace_file = trace_file
         self.model_endpoint = model_endpoint
-        self.tokenizer = get_tokenizer("", False)  # Empty string and False since parameters aren't used
+        self.tokenizer = get_tokenizer("", False)
         self.rate_limiter = RateLimiter(qps)
         self.temperature = temperature
-        
+        self.api_key = api_key
+        self.total_prompts = total_prompts       
     def count_tokens(self, text: str) -> int:
         """Estimate token count using VLLM's tokenizer."""
         return len(self.tokenizer.encode(text))
@@ -57,7 +60,7 @@ class PromptSelector:
         
         headers = {
             "Content-Type": "application/json",
-            "Authorization": "Bearer any_key"
+            "Authorization": f"Bearer {self.api_key}"
         }
         
         data = {
@@ -83,7 +86,6 @@ class PromptSelector:
         Returns list of tuples (prompt, input_tokens, output_tokens, response_data)
         """
         matching_prompts = []
-        best_input_diff = float('inf')
         candidates = []
         
         input_min = int(target_input_tokens * (1 - input_tolerance))
@@ -118,14 +120,7 @@ class PromptSelector:
         print(f"\nFound {len(candidates)} candidates. Querying model for each...")
         print("-" * 80)
         
-        current_input_diff = None
-        found_valid_match = False
-        
         for idx, (prompt, input_tokens, input_diff) in enumerate(candidates, 1):
-            # If we've found a match and the input_diff is different, we can stop
-            if found_valid_match and input_diff > current_input_diff:
-                break
-                
             print(f"\nCandidate {idx}/{len(candidates)}:")
             print(f"Input tokens: {input_tokens} (diff from target: {input_diff})")
             print(f"Prompt preview: {prompt[:200]}...")
@@ -133,11 +128,8 @@ class PromptSelector:
             output_tokens, response_data = self.get_completion_tokens(prompt)
             
             if output_tokens and output_tokens >= min_output_tokens:
-                if not found_valid_match or input_diff < current_input_diff:
-                    matching_prompts = []
-                    current_input_diff = input_diff
-                    found_valid_match = True
                 matching_prompts.append((prompt, input_tokens, output_tokens, response_data))
+                break  # We found our match, we can stop
             
             print("-" * 80)
         
@@ -161,21 +153,24 @@ class PromptSelector:
 
         filename = os.path.join(prompts_dir, f"prompt_in{target_input_tokens}_out{min_output_tokens}.json")
         
+        benchmark_format = []
+        base_timestamp = 1000 
+        
         # Create the benchmark-compatible format
-        current_time = int(time.time() * 1000)  # Current timestamp in milliseconds
-        benchmark_format = [{
-            "Timestamp": current_time,
-            "Requests": [{
-                "Prompt": prompt,
-                "Prompt Length": input_tokens,
-                "Output Length": output_tokens,
-                # Store additional metadata in a separate field
-                "Metadata": {
-                    "model_response": response_data,
-                    "temperature": self.temperature
-                }
-            } for prompt, input_tokens, output_tokens, response_data in matching_prompts]
-        }]
+        for prompt, input_tokens, output_tokens, response_data in matching_prompts:
+            for i in range(self.total_prompts):
+                benchmark_format.append({
+                    "Timestamp": base_timestamp + (i * 1000),  # Increment by 1000 for each prompt
+                    "Requests": [{
+                        "Prompt": prompt,
+                        "Prompt Length": input_tokens,
+                        "Output Length": output_tokens,
+                        "Metadata": {
+                            "model_response": response_data,
+                            "temperature": self.temperature
+                        }
+                    }]
+                })
         
         # Write the formatted data
         with open(filename, 'w', encoding='utf-8') as f:
@@ -205,6 +200,10 @@ def parse_args():
                       help='Maximum number of candidates to query (default: None, use all candidates)')
     parser.add_argument('--temperature', type=float, default=0.0,
                       help='Temperature for model inference (default: 0.0)')
+    parser.add_argument('--api-key', type=str, default="any_key",
+                      help='API key for model access (default: any_key)')
+    parser.add_argument('--total-prompts', type=int, default=1,
+                      help='Number of prompts to generate (default: 1)')
     return parser.parse_args()
 
 def main():
@@ -218,6 +217,7 @@ def main():
     print(f"QPS: {args.qps}")
     print(f"Max candidates: {args.max_candidates}")
     print(f"Model endpoint: http://{args.host}:{args.port}/v1/chat/completions")
+    print(f"Using API key: {'default' if args.api_key == 'any_key' else '****'}")
     print("-" * 80)
     
     model_endpoint = f"http://{args.host}:{args.port}/v1/chat/completions"
@@ -227,7 +227,9 @@ def main():
         trace_file=args.workload_dataset_file,
         model_endpoint=model_endpoint,
         qps=args.qps,
-        temperature=args.temperature
+        temperature=args.temperature,
+        api_key=args.api_key,
+        total_prompts=args.total_prompts 
     )
     
     matching_prompts = selector.find_matching_prompts(

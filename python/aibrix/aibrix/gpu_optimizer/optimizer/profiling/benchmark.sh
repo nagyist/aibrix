@@ -19,7 +19,7 @@ PATH_PREFIX=`dirname "$0"`
 FILE_NAME="result"
 MODEL="llama2-7b"
 
-TOTAL=100 #100
+TOTAL=100 
 # TODO: Set your preferred request sizes and rates here.
 input_start=4
 input_limit=$((2**11)) # 2K
@@ -39,8 +39,15 @@ debug_print() {
 generate_workload() {
     local input_len=$1
     local output_len=$2
-    
-    echo "Generating workload for input=$input_len, output=$output_len"
+    local api_key=$3
+    local num_prompts=$4
+
+    echo "  input_len: $input_len"
+    echo "  output_len: $output_len"
+    echo "  api_key: $api_key"
+    echo "  num_prompts: $num_prompts"
+
+    echo "Generating workload for input=$input_len, output=$output_len, API_KEY=$api_key, num_prompts=$num_prompts"
     python $PATH_PREFIX/gen_benchmark_prompt.py \
         $workload  \
         --input-tokens "$input_len" \
@@ -48,7 +55,9 @@ generate_workload() {
         --tolerance "0.2" \
         --qps "2.0" \
         --host "localhost" \
-        --port "8010"
+        --port "8010" \
+        --api-key "$api_key" \
+        --total-prompts "$num_prompts"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -150,8 +159,8 @@ input_len=$input_start
 while [[ $input_len -le $input_limit ]]; do
   output_len=$output_start
   while [[ $output_len -le $output_limit ]]; do
-    # Generate filtered workload for current input/output lengths
-    generate_workload $input_len $output_len
+    # Make sure all arguments are passed in the correct order
+    generate_workload "$input_len" "$output_len" "$LLM_API_KEY" "$TOTAL"
   
     # Convert rate_start to integer (multiply by 100 and remove decimals)
     req_rate=$(echo "$rate_start * 100" | bc | cut -d. -f1)

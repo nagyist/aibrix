@@ -59,23 +59,31 @@ def sample_requests(
         try:
             with open(workload_dataset_file) as f:
                 data = json.load(f)
-                if not data or not data[0].get("Requests"):
-                    print_err("Warning: No requests found in dataset")
-                    return []
-                request = data[0]["Requests"][0]
-                
-                # Generate repeated requests based on num_requests
+                # Return timestamp and request tuples
                 requests = []
-                for _ in range(num_requests):
-                    requests.append((
-                        request["Prompt"],
-                        request["Prompt Length"],
-                        request["Output Length"],
-                        -1  # Default interval
-                    ))
-                
+                for i, entry in enumerate(data):
+                    # Limit the number of requests read from workload
+
+                    # print(f"Request {i}: {entry}")
+                    cur_timestamp = entry["Timestamp"]
+                    next_timestamp = (
+                        data[i + 1]["Timestamp"] if i < len(data) - 1 else cur_timestamp
+                    )
+                    interval = (next_timestamp - cur_timestamp) / 1000.0
+                    for i, req in enumerate(entry["Requests"]):
+                        requests.append(
+                            (
+                                req["Prompt"],
+                                req["Prompt Length"],
+                                req["Output Length"],
+                                interval if i == len(entry["Requests"]) - 1 else 0,
+                            )
+                        )
+                        if num_requests > 0 and len(requests) >= num_requests:
+                            return requests
+                # print('total requests: ', len(requests))
+                # print('the least requests: ', requests[len(requests) - 1])
                 return requests
-                
         except Exception as e:
             print_err(
                 f"Warning: Failed to load prompt dataset ({e}), falling back to synthetic prompts"
@@ -321,11 +329,6 @@ def main(args: argparse.Namespace):
         args.num_prompts, args.input_len, args.output_len, args.workload_dataset_file
     )
     result["samples"] = len(input_requests)  # Update number of samples
-
-    # Validate we have requests to process
-    if not input_requests:
-        print_err(f"Warning: No valid requests for configuration - input_len: {args.input_len}, output_len: {args.output_len}. Skipping...")
-        return 
 
     benchmark_start_time = time.perf_counter()
     try:
