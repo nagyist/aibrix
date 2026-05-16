@@ -34,6 +34,7 @@ import (
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/handler"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
+	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
 	plannerimpl "github.com/vllm-project/aibrix/apps/console/api/planner/impl"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager"
@@ -50,6 +51,7 @@ type Server struct {
 	store      store.Store
 	cfg        *config.Config
 	auth       *middleware.AuthMiddleware
+	planner    plannerapi.Planner
 }
 
 // New creates a new console Server from configuration.
@@ -116,11 +118,11 @@ func (s *Server) StartGRPC(addr string) error {
 	if err != nil {
 		return fmt.Errorf("resource manager init: %w", err)
 	}
-	planner := plannerimpl.NewPassthrough(batchClient, rm.Provisioner)
+	s.planner = plannerimpl.NewPlanner(batchClient, rm.Provisioner, plannerimpl.DefaultWorkerCount)
 
 	// Register all service handlers
 	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store))
-	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, planner, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode))
+	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.planner, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode))
 	pb.RegisterModelServiceServer(s.grpcServer, handler.NewModelHandler(s.store))
 	pb.RegisterModelDeploymentTemplateServiceServer(s.grpcServer, handler.NewModelDeploymentTemplateHandler(s.store))
 	pb.RegisterAPIKeyServiceServer(s.grpcServer, handler.NewAPIKeyHandler(s.store))
@@ -205,6 +207,11 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if s.httpServer != nil {
 		if err := s.httpServer.Shutdown(ctx); err != nil {
 			klog.Errorf("failed to shutdown http server: %v", err)
+		}
+	}
+	if s.planner != nil {
+		if err := s.planner.Close(); err != nil {
+			klog.Errorf("failed to close planner: %v", err)
 		}
 	}
 	if s.store != nil {
